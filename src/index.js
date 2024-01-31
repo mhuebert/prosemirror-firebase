@@ -3,22 +3,24 @@ const { Node } = require('prosemirror-model')
 const { Step } = require('prosemirror-transform')
 const { collab, sendableSteps, receiveTransaction } = require('prosemirror-collab')
 const { compressStepsLossy, compressStateJSON, uncompressStateJSON, compressSelectionJSON, uncompressSelectionJSON, compressStepJSON, uncompressStepJSON } = require('prosemirror-compress')
+const { off, query, runTransaction, startAt, orderByKey, onChildAdded, onChildChanged, onChildRemoved, get, onDisconnect, remove, set, child, push } = require("firebase/database")
 const TIMESTAMP = { '.sv': 'timestamp' }
 
-export class FirebaseEditor {
-  constructor({ firebaseRef, stateConfig, view: constructView, clientID: selfClientID = firebaseRef.push().key, progress = _=>_ }) {
+module.exports.FirebaseEditor = class FirebaseEditor {
+  constructor({ firebaseRef, stateConfig, clientID, view: constructView, progress = _ => _ }) {
     progress(0 / 2)
     const this_ = this
-    const checkpointRef = this.checkpointRef = firebaseRef.child('checkpoint')
-    const changesRef = this.changesRef = firebaseRef.child('changes')
-    const selectionsRef = this.selectionsRef = firebaseRef.child('selections')
-    const selfSelectionRef = this.selfSelectionRef = selectionsRef.child(selfClientID)
-    selfSelectionRef.onDisconnect().remove()
+    const selfClientID = clientID || push(firebaseRef).key
+    const checkpointRef = this.checkpointRef = child(firebaseRef, 'checkpoint')
+    const changesRef = this.changesRef = child(firebaseRef, 'changes')
+    const selectionsRef = this.selectionsRef = child(firebaseRef, 'selections')
+    const selfSelectionRef = this.selfSelectionRef = child(selectionsRef, selfClientID)
+    onDisconnect(selfSelectionRef).remove()
     const selections = this.selections = {}
     const selfChanges = {}
     let selection = undefined
 
-    const constructEditor = checkpointRef.once('value').then(
+    const constructEditor = get(checkpointRef).then(
       function (snapshot) {
         progress(1 / 2)
         let { d, k: latestKey = -1 } = snapshot.val() || {}
@@ -39,7 +41,7 @@ export class FirebaseEditor {
           const sendable = sendableSteps(newState)
           if (sendable) {
             const { steps, clientID } = sendable
-            changesRef.child(latestKey + 1).transaction(
+            runTransaction(child(changesRef, String(latestKey + 1)),
               function (existingBatchedSteps) {
                 if (!existingBatchedSteps) {
                   selfChanges[latestKey + 1] = steps
@@ -52,25 +54,27 @@ export class FirebaseEditor {
                   }
                 }
               },
-              function (error, committed, { key }) {
-                if (error) {
-                  console.error('updateCollab', error, sendable, key)
-                } else if (committed && key % 100 === 0 && key > 0) {
+              { applyLocally: false })
+              .then(function ({ committed, snapshot }) {
+                const key = snapshot.key
+                if (committed && key % 100 === 0 && key > 0) {
                   const { d } = compressStateJSON(newState.toJSON())
-                  checkpointRef.set({ d, k: key, t: TIMESTAMP })
+                  set(checkpointRef, { d, k: key, t: TIMESTAMP })
                 }
-              },
-              false )
+              })
+              .catch(function (error) {
+                console.error('updateCollab', error, sendable, key)
+              })
           }
 
           const selectionChanged = !newState.selection.eq(selection)
           if (selectionChanged) {
             selection = newState.selection
-            selfSelectionRef.set(compressSelectionJSON(selection.toJSON()))
+            set(selfSelectionRef, compressSelectionJSON(selection.toJSON()))
           }
         }
 
-        return changesRef.startAt(null, String(latestKey + 1)).once('value').then(
+        return get(query(changesRef, orderByKey(), startAt(String(latestKey + 1)))).then(
           function (snapshot) {
             progress(2 / 2)
             const view = this_.view = constructView({ stateConfig, updateCollab, selections })
@@ -107,24 +111,25 @@ export class FirebaseEditor {
                 editor.dispatch(editor.state.tr)
               }
             }
-            selectionsRef.on('child_added', updateClientSelection)
-            selectionsRef.on('child_changed', updateClientSelection)
-            selectionsRef.on('child_removed', updateClientSelection)
 
-            changesRef.startAt(null, String(latestKey + 1)).on(
-              'child_added',
+            onChildAdded(selectionsRef, updateClientSelection)
+            onChildChanged(selectionsRef, updateClientSelection)
+            onChildRemoved(selectionsRef, updateClientSelection)
+
+            onChildAdded(query(changesRef, orderByKey(), startAt(String(latestKey + 1))),
               function (snapshot) {
                 latestKey = Number(snapshot.key)
                 const { s: compressedStepsJSON, c: clientID } = snapshot.val()
                 const steps = (
                   clientID === selfClientID ?
                     selfChanges[latestKey]
-                  :
-                    compressedStepsJSON.map(compressedStepJSONToStep) )
+                    :
+                    compressedStepsJSON.map(compressedStepJSONToStep))
                 const stepClientIDs = new Array(steps.length).fill(clientID)
                 editor.dispatch(receiveTransaction(editor.state, steps, stepClientIDs))
                 delete selfChanges[latestKey]
               } )
+
 
             return Object.assign({
               destroy: this_.destroy.bind(this_),
@@ -140,10 +145,10 @@ export class FirebaseEditor {
 
   destroy() {
     this.catch(_=>_).then(() => {
-      this.changesRef.off()
-      this.selectionsRef.off()
-      this.selfSelectionRef.off()
-      this.selfSelectionRef.remove()
+      off(this.changesRef)
+      off(this.selectionsRef)
+      off(this.selfSelectionRef)
+      remove(this.selfSelectionRef)
       this.view.destroy()
     })
   }
