@@ -1,5 +1,7 @@
 # prosemirror-firebase
 
+_This fork has been modified to use the Firebase modular API (and lightly tested with version 10)_
+
 Collaborative editing for ProseMirror using Firebase's Realtime Database. Features timestamped and attributed changes, version checkpointing, selection tracking, and more.
 
 ## usage
