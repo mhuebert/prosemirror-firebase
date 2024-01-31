@@ -6,7 +6,7 @@ const { compressStepsLossy, compressStateJSON, uncompressStateJSON, compressSele
 const { off, query, runTransaction, startAt, orderByKey, onChildAdded, onChildChanged, onChildRemoved, get, onDisconnect, remove, set, child, push } = require("firebase/database")
 const TIMESTAMP = { '.sv': 'timestamp' }
 
-module.exports.FirebaseEditor = class FirebaseEditor {
+export class FirebaseEditor {
   constructor({ firebaseRef, stateConfig, clientID, view: constructView, progress = _ => _ }) {
     progress(0 / 2)
     const this_ = this
